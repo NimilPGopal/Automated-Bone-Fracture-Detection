@@ -25,12 +25,14 @@ IMAGES_DIR = BASE_DIR / "images"
 #    # use self.after() to update GUI from main thread
 #    self.after(0, self._update_ui, results)
 
+from core.preprocessing import read_image_file
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.filename = None
 
-        self.title("Automated Bone Fracture Detection")
+        self.title("Automated Bone Fracture Detection (Grad-CAM++)")
         self.geometry("950x700")
         self.minsize(900, 650)
 
@@ -112,7 +114,7 @@ class App(ctk.CTk):
 
         self.gradcam_title = ctk.CTkLabel(
             master=self.prediction_tab,
-            text="Diagnostic Visualization",
+            text="Diagnostic Visualization (Grad-CAM++)",
             font=("Arial", 22, "bold")
         )
 
@@ -277,7 +279,7 @@ class App(ctk.CTk):
         about_text = """
         Automated Bone Fracture Detection System
 
-        This system uses Deep Learning and DenseNet121
+        This system uses Deep Learning (DenseNet121) and Grad-CAM++
         to detect fractures from X-ray images.
 
         Supported Body Parts:
@@ -288,12 +290,13 @@ class App(ctk.CTk):
         Features:
         • Automatic body-part classification
         • Fracture detection
-        • Grad-CAM visualization
+        • Grad-CAM++ spatial visualization
+        • DICOM (.dcm) & Standard Image Support
         • PDF diagnostic reports
         • ROC & evaluation analysis
 
         Developed using:
-        Python, TensorFlow, CustomTkinter, OpenCV
+        Python, TensorFlow, CustomTkinter, OpenCV, pydicom
         """
 
         self.about_label = ctk.CTkLabel(
@@ -325,7 +328,7 @@ class App(ctk.CTk):
         self.info_button.pack(pady=10, padx=10, anchor="nw", side="right")
 
         self.info_label = ctk.CTkLabel(master=self.upload_tab,
-                                       text="Automated bone fracture detection system, upload an x-ray image for fracture detection.",
+                                       text="Automated bone fracture detection system. Supports PNG, JPG, JPEG, and DICOM (.dcm) X-rays.",
                                        wraplength=300, font=(ctk.CTkFont("Roboto"), 18))
         self.info_label.pack(pady=10, padx=10)
 
@@ -354,7 +357,10 @@ class App(ctk.CTk):
  
     def upload_image(self):
         try:
-            f_types = [("All Files", "*.*")]
+            f_types = [
+                ("Medical X-Rays / DICOM", "*.png;*.jpg;*.jpeg;*.dcm;*.dicom"),
+                ("All Files", "*.*")
+            ]
             self.filename = filedialog.askopenfilename(
                 filetypes=f_types,
                 initialdir=os.path.expanduser("~/Pictures")
@@ -371,7 +377,8 @@ class App(ctk.CTk):
                 image=self.default_image
             )
 
-            img = Image.open(self.filename)
+            rgb_array = read_image_file(self.filename)
+            img = Image.fromarray(rgb_array)
 
             self.uploaded_ctk_image = ctk.CTkImage(
                 light_image=img,
@@ -424,16 +431,15 @@ class App(ctk.CTk):
             )
 
             # -----------------------------------------
-            # Predict FRACTURE
+            # Predict FRACTURE & UNCERTAINTY (1c)
             # -----------------------------------------
-            fracture_result, fracture_conf = predict(
+            fracture_result, fracture_conf, probs, is_uncertain = predict(
                 self.filename,
                 bone_type_result,
-                return_confidence=True
+                return_uncertainty=True
             )
 
             self.tabview.set("Prediction")
-
 
             self.after(
                 0,
@@ -450,17 +456,19 @@ class App(ctk.CTk):
                 text=f"Detected Body Part: {bone_type_result} ({bone_conf:.2f}%)"
             )
 
+            result_str = f"Fracture Detection: {fracture_result.upper()} ({fracture_conf:.2f}%)"
+            if is_uncertain:
+                result_str += "\n⚠️ CLINICAL WARNING: Prediction is UNCERTAIN (<65% confidence). Radiologist review required."
+
             self.res2_label.configure(
-                text=f"Fracture Detection: {fracture_result.upper()} ({fracture_conf:.2f}%)"
+                text=result_str
             )
 
             self.res1_label.pack(pady=10)
-
             self.res2_label.pack(pady=10)
 
-
             # -----------------------------------------
-            # Generate GradCAM
+            # Generate GradCAM++
             # -----------------------------------------
             gradcam_path = generate_gradcam(
                 self.filename,
@@ -468,7 +476,6 @@ class App(ctk.CTk):
             )
 
             grad_img = Image.open(gradcam_path)
-
             grad_img = grad_img.resize((300, 300))
 
             grad_img = ctk.CTkImage(
@@ -484,7 +491,6 @@ class App(ctk.CTk):
             self.gradcam_title.pack(pady=20)
             self.gradcam_label.pack(pady=10)
             self.pdf_btn.pack(pady=20)
-
             self.gradcam_label.pack(pady=5)
 
             # -----------------------------------------
@@ -492,15 +498,11 @@ class App(ctk.CTk):
             # -----------------------------------------
             self.body_part = bone_type_result
             self.body_conf = bone_conf
-
             self.fracture_result = fracture_result
             self.fracture_conf = fracture_conf
-
+            self.is_uncertain = is_uncertain
             self.gradcam_path = gradcam_path
 
-            # -----------------------------------------
-            # Show PDF button
-            # -----------------------------------------
             self.pdf_btn.pack(pady=10)
 
         except Exception as e:
@@ -514,8 +516,6 @@ class App(ctk.CTk):
                     text="Predict"
                 )
             )
-
-
 
     def generate_pdf(self):
         try:
@@ -538,6 +538,7 @@ class App(ctk.CTk):
                 body_conf=self.body_conf,
                 fracture_result=self.fracture_result,
                 fracture_conf=self.fracture_conf,
+                is_uncertain=getattr(self, 'is_uncertain', False)
             )
 
             self.save_label.configure(
@@ -550,6 +551,7 @@ class App(ctk.CTk):
 
         except Exception as e:
             print("PDF generation error:", e)
+
         
     def open_image_window(self):
         try:

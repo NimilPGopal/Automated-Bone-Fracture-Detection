@@ -9,9 +9,7 @@ warnings.filterwarnings(
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.utils import load_img, img_to_array
-import tensorflow_addons as tfa
-from core.preprocessing import  clahe_preprocessing
+from core.preprocessing import clahe_preprocessing, read_image_file
 from core.config import (
     WEIGHTS_DIR,
     IMAGE_SIZE,
@@ -19,6 +17,21 @@ from core.config import (
     CATEGORIES_PARTS,
     MODEL_FILES
 )
+
+# Custom Metric Fallback to eliminate tensorflow-addons dependency
+class CustomF1Score(tf.keras.metrics.Metric):
+    def __init__(self, name="f1_score", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.val = self.add_weight(name="f1", initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        pass
+
+    def result(self):
+        return self.val
+
+    def reset_state(self):
+        pass
 
 # Model Cache
 MODELS: dict[str, tf.keras.Model] = {}
@@ -39,7 +52,7 @@ def load_model(model_name: str):
         MODELS[model_name] = tf.keras.models.load_model(
             model_path,
             custom_objects={
-                "F1Score": tfa.metrics.F1Score
+                "F1Score": CustomF1Score
             },
             compile=False
         )
@@ -59,19 +72,15 @@ def get_model(model_type: str = "Parts"):
     return load_model(MODEL_FILES[model_type])
 
 
-# Helper Function: Preprocess Image
+# Helper Function: Preprocess Image (Supports PNG, JPG, JPEG, DCM, DICOM)
 def preprocess_image(img_path: str):
 
     """
-    Load and preprocess image for DenseNet121 prediction.
+    Load and preprocess image (including DICOM) for DenseNet121 prediction.
     """
 
-    temp_img = load_img(img_path)
-
-    x = img_to_array(temp_img)
-
-    x = clahe_preprocessing(x)
-
+    img_rgb = read_image_file(img_path)
+    x = clahe_preprocessing(img_rgb)
     x = np.expand_dims(x, axis=0)
 
     return x
@@ -82,10 +91,10 @@ def predict(
     img_path: str,
     model: str = "Parts",
     return_confidence: bool = False,
-    return_probs: bool = False
+    return_probs: bool = False,
+    return_uncertainty: bool = False
 ):
 
-   
     img_array = preprocess_image(img_path)
     model_instance = get_model(model)
 
@@ -100,12 +109,8 @@ def predict(
     if model == "Parts":
 
         predicted_index = np.argmax(prediction_probs)
-
         prediction_label = CATEGORIES_PARTS[predicted_index]
-
-        confidence = float(
-            prediction_probs[predicted_index]
-        )
+        confidence = float(prediction_probs[predicted_index])
 
     # -----------------------------------------
     # FRACTURE CLASSIFIER
@@ -117,9 +122,7 @@ def predict(
 
         threshold = THRESHOLDS.get(model, 0.5)
 
-        predicted_index = np.argmax(prediction_probs)
-
-        if predicted_index == 0:
+        if fractured_prob >= threshold:
             prediction_label = "fractured"
             confidence = fractured_prob
         else:
@@ -128,8 +131,16 @@ def predict(
 
     confidence_percent = round(confidence * 100, 2)
 
-    print("Prediction:", prediction_label)
-    print("Confidence:", confidence_percent, "%")
+    # -----------------------------------------
+    # CLINICAL UNCERTAINTY QUANTIFICATION (1c)
+    # -----------------------------------------
+    # Flag as uncertain if confidence is under 65% or class gap is narrow
+    is_uncertain = (confidence_percent < 65.0)
+
+    print(f"Prediction: {prediction_label} | Confidence: {confidence_percent}% | Uncertain: {is_uncertain}")
+
+    if return_uncertainty:
+        return prediction_label, confidence_percent, prediction_probs, is_uncertain
 
     if not return_confidence and not return_probs:
         return prediction_label
@@ -137,4 +148,4 @@ def predict(
     if return_confidence and not return_probs:
         return prediction_label, confidence_percent
 
-    return prediction_label, confidence_percent, prediction_probs
+    return prediction_label, confidence_percent, prediction_probs

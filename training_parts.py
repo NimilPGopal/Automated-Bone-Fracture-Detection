@@ -66,6 +66,7 @@ def load_dataset(dataset_path: Path):
                         if image_file.is_file():
                             dataset.append({
                                 "label": body_part,
+                                "patient_id": patient_folder.name,
                                 "image_path": str(image_file)
                             })
 
@@ -79,11 +80,14 @@ def prepare_dataframe(dataset):
     """
     filepaths = [row["image_path"] for row in dataset]
     labels = [row["label"] for row in dataset]
+    patient_ids = [row["patient_id"] for row in dataset]
 
     return pd.DataFrame({
         "Filepath": filepaths,
-        "Label": labels
+        "Label": labels,
+        "patient_id": patient_ids
     })
+
 
 
 # Create Data Generators
@@ -284,14 +288,18 @@ def main():
     print("Preparing dataframe...")
     images_df = prepare_dataframe(dataset)
 
-    print("Splitting dataset...")
-    train_df, test_df = train_test_split(
-        images_df,
+    print("Splitting dataset by patient level (zero data leakage)...")
+    unique_patients = images_df["patient_id"].unique()
+    train_patients, test_patients = train_test_split(
+        unique_patients,
         train_size=0.9,
         shuffle=True,
-        random_state=RANDOM_STATE,
-        stratify=images_df["Label"]
+        random_state=RANDOM_STATE
     )
+
+    train_df = images_df[images_df["patient_id"].isin(train_patients)]
+    test_df = images_df[images_df["patient_id"].isin(test_patients)]
+
 
     print("Creating data generators...")
     train_images, val_images, test_images, class_weights = create_generators(

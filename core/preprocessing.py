@@ -2,6 +2,47 @@ from PIL import Image
 import cv2
 import numpy as np
 import tensorflow as tf
+
+def read_image_file(img_path):
+    """
+    Read standard image files (PNG, JPG, JPEG) or DICOM (.dcm, .dicom) files.
+    Returns RGB uint8 numpy array.
+    """
+    path_str = str(img_path).lower()
+    if path_str.endswith(".dcm") or path_str.endswith(".dicom"):
+        try:
+            import pydicom
+            from pydicom.pixel_data_handlers.util import apply_voi_lut
+
+            dicom = pydicom.dcmread(img_path)
+            try:
+                data = apply_voi_lut(dicom.pixel_array, dicom)
+            except Exception:
+                data = dicom.pixel_array
+
+            if getattr(dicom, "PhotometricInterpretation", "") == "MONOCHROME1":
+                data = np.max(data) - data
+
+            data = data.astype(np.float32)
+            if np.max(data) != np.min(data):
+                data = (data - np.min(data)) / (np.max(data) - np.min(data)) * 255.0
+            data = data.astype(np.uint8)
+
+            if len(data.shape) == 2:
+                img_np = cv2.cvtColor(data, cv2.COLOR_GRAY2RGB)
+            elif len(data.shape) == 3:
+                if data.shape[2] == 1:
+                    img_np = cv2.cvtColor(data[:, :, 0], cv2.COLOR_GRAY2RGB)
+                else:
+                    img_np = data
+            return img_np
+        except Exception as e:
+            print(f"[WARNING] Failed to load DICOM file with pydicom: {e}. Falling back to PIL.")
+
+    img = Image.open(img_path).convert("RGB")
+    return np.array(img)
+
+
 def crop_roi(img):
 
     if len(img.shape) == 3:
@@ -73,9 +114,7 @@ def clahe_preprocessing(img):
 
 def preprocess_visual_image(img_path):
 
-    img = Image.open(img_path).convert("RGB")
-    img = np.array(img)
-
+    img = read_image_file(img_path)
     img = crop_roi(img)
 
-    return img
+    return img

@@ -14,11 +14,86 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_FILE = OUTPUT_DIR / "latest_gradcam.png"
 
 
+def find_last_conv_layer(model):
+    """
+    Dynamically locate the last 4D output convolutional or concatenation layer.
+    """
+    for layer in reversed(model.layers):
+        try:
+            output_shape = layer.output_shape
+            if isinstance(output_shape, list):
+                output_shape = output_shape[0]
+            if len(output_shape) == 4:
+                return layer.name
+        except Exception:
+            continue
+
+    return "conv5_block16_concat"
+
 
 # -----------------------------------------------------------------------------
-# Create heatmap
+# Grad-CAM++ Heatmap Generation
 # -----------------------------------------------------------------------------
-def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
+def make_gradcam_plus_plus_heatmap(img_array, model, last_conv_layer_name=None, pred_index=None):
+    """
+    Generate a Grad-CAM++ heatmap using 1st, 2nd, and 3rd order gradients.
+    """
+    if last_conv_layer_name is None:
+        last_conv_layer_name = find_last_conv_layer(model)
+
+    try:
+        conv_layer = model.get_layer(last_conv_layer_name)
+    except ValueError:
+        last_conv_layer_name = find_last_conv_layer(model)
+        conv_layer = model.get_layer(last_conv_layer_name)
+
+    grad_model = tf.keras.models.Model(
+        [model.inputs],
+        [conv_layer.output, model.output],
+    )
+
+    with tf.GradientTape() as tape3:
+        with tf.GradientTape() as tape2:
+            with tf.GradientTape() as tape1:
+                conv_outputs, predictions = grad_model(img_array)
+                if pred_index is None:
+                    pred_index = 0
+                class_channel = predictions[:, pred_index]
+
+            grads_1 = tape1.gradient(class_channel, conv_outputs)
+        grads_2 = tape2.gradient(grads_1, conv_outputs)
+    grads_3 = tape3.gradient(grads_2, conv_outputs)
+
+    if grads_1 is None:
+        # Fallback to standard Grad-CAM if higher-order gradients are unsupported
+        return make_standard_gradcam(img_array, model, last_conv_layer_name, pred_index)
+
+    conv_outputs = conv_outputs[0]
+    grads_1 = grads_1[0]
+    grads_2 = grads_2[0]
+    grads_3 = grads_3[0]
+
+    # Compute alpha coefficients for Grad-CAM++
+    sum_activation_grads = tf.reduce_sum(conv_outputs * grads_3, axis=(0, 1), keepdims=True)
+    denom = 2.0 * grads_2 + sum_activation_grads
+    denom = tf.where(denom != 0.0, denom, tf.ones_like(denom) * 1e-10)
+
+    aij = grads_2 / denom
+
+    positive_grads_1 = tf.maximum(grads_1, 0.0)
+    weights = tf.reduce_sum(positive_grads_1 * aij, axis=(0, 1))
+
+    heatmap = tf.reduce_sum(weights * conv_outputs, axis=-1)
+    heatmap = tf.maximum(heatmap, 0.0)
+
+    max_val = tf.reduce_max(heatmap)
+    if max_val > 0:
+        heatmap = heatmap / max_val
+
+    return heatmap.numpy()
+
+
+def make_standard_gradcam(img_array, model, last_conv_layer_name, pred_index=None):
     grad_model = tf.keras.models.Model(
         [model.inputs],
         [model.get_layer(last_conv_layer_name).output, model.output],
@@ -26,182 +101,115 @@ def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None
 
     with tf.GradientTape() as tape:
         conv_outputs, predictions = grad_model(img_array)
-
         if pred_index is None:
-
-            # Always visualize fracture class
             pred_index = 0
-
         class_channel = predictions[:, pred_index]
 
-    # Gradients of the target class with respect to conv outputs
     grads = tape.gradient(class_channel, conv_outputs)
-
-    # Global average pooling over height and width
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
-    # Weight feature maps by importance
     conv_outputs = conv_outputs[0]
-
-    heatmap = tf.reduce_sum(
-        tf.multiply(conv_outputs, pooled_grads),
-        axis=-1
-    )
-
-    # Normalize to [0, 1]
-    heatmap = tf.maximum(heatmap, 0)
+    heatmap = tf.reduce_sum(tf.multiply(conv_outputs, pooled_grads), axis=-1)
+    heatmap = tf.maximum(heatmap, 0.0)
     max_val = tf.reduce_max(heatmap)
 
-    if max_val == 0:
-        return np.zeros(heatmap.shape, dtype=np.float32)
-
-    heatmap = heatmap / max_val
+    if max_val > 0:
+        heatmap = heatmap / max_val
     return heatmap.numpy()
+
+
+# Alias for backward compatibility
+make_gradcam_heatmap = make_gradcam_plus_plus_heatmap
 
 
 # -----------------------------------------------------------------------------
 # Apply heatmap to original image
 # -----------------------------------------------------------------------------
-def overlay_heatmap(original_image_path, heatmap, alpha=0.25):
+def overlay_heatmap(original_image_path, heatmap, alpha=0.35, output_file=None):
     from matplotlib import cm
 
-    # Load original image
-    original_np = preprocess_visual_image(
-        original_image_path
-    ).astype(np.float32)
+    original_np = preprocess_visual_image(original_image_path).astype(np.float32)
 
-    # Resize heatmap to match image size
-    heatmap_img = Image.fromarray(
-        np.uint8(heatmap * 255)
-    ).resize(
+    heatmap_img = Image.fromarray(np.uint8(heatmap * 255)).resize(
         (original_np.shape[1], original_np.shape[0])
     )
 
     heatmap_np = np.array(heatmap_img).astype(np.float32) / 255.0
 
-    # Apply INFERNO colormap (RGB values in range [0, 1])
     colored_heatmap = cm.get_cmap("inferno")(heatmap_np)[..., :3]
-
-    # Convert to [0, 255]
     colored_heatmap = (colored_heatmap * 255).astype(np.float32)
 
-    # Blend original image and heatmap
     blended = original_np * (1 - alpha) + colored_heatmap * alpha
     blended = np.clip(blended, 0, 255).astype(np.uint8)
 
-    # Save result
     result = Image.fromarray(blended)
-    result.save(OUTPUT_FILE)
+    target_out = output_file if output_file is not None else OUTPUT_FILE
+    result.save(target_out)
 
-    return OUTPUT_FILE
+    return target_out
+
 
 def save_gradcam(model_type, img_path, output_path):
     """
-    Generate and save GradCAM visualization.
+    Generate and save Grad-CAM++ visualization.
     """
-
-    # Load model
     model = get_model(model_type)
-
-    # Preprocess image
     img_array = preprocess_image(img_path)
+    last_conv_layer_name = find_last_conv_layer(model)
 
-    # Find last conv layer automatically
-    last_conv_layer_name = None
-    for layer in reversed(model.layers):
-        if len(layer.output_shape) == 4:
-            last_conv_layer_name = layer.name
-            break
-
-    if last_conv_layer_name is None:
-        raise ValueError("No convolutional layer found.")
-
-    # Generate heatmap
-    heatmap = make_gradcam_heatmap(
+    heatmap = make_gradcam_plus_plus_heatmap(
         img_array,
         model,
         last_conv_layer_name
     )
 
-    # Load original image
-    original_np = preprocess_visual_image(
-        img_path
-    ).astype(np.float32)
+    original_np = preprocess_visual_image(img_path).astype(np.float32)
 
-    # Resize heatmap
-    heatmap_img = Image.fromarray(
-        np.uint8(heatmap * 255)
-    ).resize(
+    heatmap_img = Image.fromarray(np.uint8(heatmap * 255)).resize(
         (original_np.shape[1], original_np.shape[0])
     )
 
     heatmap_np = np.array(heatmap_img).astype(np.float32) / 255.0
 
-    # Apply colormap
     from matplotlib import cm
-
     colored_heatmap = cm.get_cmap("inferno")(heatmap_np)[..., :3]
     colored_heatmap = (colored_heatmap * 255).astype(np.float32)
 
-    # Blend
     blended = original_np * 0.6 + colored_heatmap * 0.4
     blended = np.clip(blended, 0, 255).astype(np.uint8)
 
-    # Save
     result = Image.fromarray(blended)
     result.save(output_path)
 
     return str(output_path)
 
-# -----------------------------------------------------------------------------
-# Main function used by GUI
-# -----------------------------------------------------------------------------
-def generate_gradcam(image_path, model_type):
+
+def generate_gradcam(image_path, model_type, output_path=None):
     """
-    Generate Grad-CAM visualization for an image.
-
-    Parameters
-    ----------
-    image_path : str
-        Path to the X-ray image.
-
-    model_type : str
-        "Parts", "Elbow", "Hand", or "Shoulder"
-
-    Returns
-    -------
-    str
-        Path to the generated Grad-CAM image.
+    Generate Grad-CAM++ visualization for an image.
     """
-    # Load model using existing project utilities
     model = get_model(model_type)
-
-    # Preprocess image using the same preprocessing as prediction
     img_array = preprocess_image(image_path)
+    last_conv_layer_name = find_last_conv_layer(model)
 
-    # Automatically locate last convolutional layer
-    last_conv_layer_name = None
-    last_conv_layer_name = "conv5_block16_concat"
-
-    # Generate heatmap
-    heatmap = make_gradcam_heatmap(
+    heatmap = make_gradcam_plus_plus_heatmap(
         img_array,
         model,
         last_conv_layer_name,
     )
 
-    # Overlay on original image and save
-    output_path = overlay_heatmap(image_path, heatmap)
+    if output_path is None:
+        img_stem = Path(image_path).stem
+        output_path = OUTPUT_DIR / f"gradcam_{img_stem}.png"
+
+    output_path = overlay_heatmap(image_path, heatmap, output_file=output_path)
 
     return str(output_path)
 
 
-# -----------------------------------------------------------------------------
-# Standalone test
-# -----------------------------------------------------------------------------
 if __name__ == "__main__":  # pragma: no cover
     test_image = input("Enter image path: ").strip()
     model_name = input("Enter model type (Parts/Elbow/Hand/Shoulder): ").strip()
 
     output = generate_gradcam(test_image, model_name)
-    print(f"Grad-CAM saved to: {output}")
+    print(f"Grad-CAM++ saved to: {output}")
