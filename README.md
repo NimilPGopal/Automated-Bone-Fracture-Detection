@@ -9,7 +9,7 @@
 
 An advanced AI-powered **Bone Fracture Detection System** that automatically classifies musculoskeletal X-ray images into anatomical regions (*Elbow, Hand, Shoulder*) and performs high-precision fracture detection using specialized deep learning models (**DenseNet121**). The system features **Grad-CAM++ explainability**, **DICOM medical image support**, **clinical uncertainty quantification**, and automated **PDF report generation**.
 
-| ![](screenshots/home_page.png) | 
+ ![](screenshots/home_page.png) 
 ---
 
 ## 📌 Project Overview
