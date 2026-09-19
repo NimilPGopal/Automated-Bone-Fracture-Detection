@@ -193,9 +193,9 @@ python desktop/mainGUI.py
 | :---: | :---: |
 | ![](screenshots/result_2.png) | ![](screenshots/gradcam_result.png) |
 
-| Diagnostic Report Download | | PDF Report Output | 
-| :---: | | :---: |
-| ![](screenshots/Diag_report_download.png) | | ![](screenshots/pdf_report.png) | 
+| Diagnostic Report Download | PDF Report Output | 
+| :---: | :---: |
+| ![](screenshots/Diag_report_download.png) | ![](screenshots/pdf_report.png) | 
 
 ---
 
