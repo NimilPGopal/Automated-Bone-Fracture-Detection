@@ -9,6 +9,7 @@
 
 An advanced AI-powered **Bone Fracture Detection System** that automatically classifies musculoskeletal X-ray images into anatomical regions (*Elbow, Hand, Shoulder*) and performs high-precision fracture detection using specialized deep learning models (**DenseNet121**). The system features **Grad-CAM++ explainability**, **DICOM medical image support**, **clinical uncertainty quantification**, and automated **PDF report generation**.
 
+| ![](screenshots/home_page.png) | 
 ---
 
 ## 📌 Project Overview
@@ -184,22 +185,17 @@ python desktop/mainGUI.py
 
 ## 📸 Application Screenshots
 
-| Home Page | Uploaded Images |
+| Uploaded Images | Clinical Results for img 1 |
 | :---: | :---: |
-| ![](screenshots/home_page.png) | ![](screenshots/upload_page.png) |
+| ![](screenshots/upload_page.png) | ![](screenshots/result_1.png) |
 
-| Clinical Results for img 1 | Clinical Results for img  2 |
+| Clinical Results for img  2 | Grad-CAM++ Visualization |
 | :---: | :---: |
-| ![](screenshots/result_1.png) | ![](screenshots/result_2.png) |
+| ![](screenshots/result_2.png) | ![](screenshots/gradcam_result.png) |
 
-| Grad-CAM++ Visualization | Diagnostic Report Download |
-| :---: | :---: |
-| ![](screenshots/gradcam_result.png) | ![](screenshots/Diag_report_download.png) |
-
-| PDF Report Output | 
-| :---: | :---: |
-| ![](screenshots/pdf_report.png) | 
-
+| Diagnostic Report Download | | PDF Report Output | 
+| :---: | | :---: |
+| ![](screenshots/Diag_report_download.png) | | ![](screenshots/pdf_report.png) | 
 
 ---
 
